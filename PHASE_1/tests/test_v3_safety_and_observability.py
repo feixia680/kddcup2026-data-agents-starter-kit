@@ -113,3 +113,26 @@ def test_critical_verification_warning_blocks_answer_until_repair():
     assert result.answer == AnswerTable(["value"], [[4.0]])
     assert "__verification_required__" in [step.action for step in result.steps]
     assert calls[-1] == "answer"
+
+
+def test_document_extractor_keeps_task_relevant_numeric_fields(tmp_path):
+    from data_agent_baseline.tools.document_extract import extract_document_records
+
+    context = tmp_path / "context"
+    context.mkdir()
+    document = context / "lab.md"
+    document.write_text(
+        "The profile for patient 12345 showed creatinine, initially 2.1 mg/dL, "
+        "was verified at 3.1 mg/dL. The height was recorded at 165.0 centimeters."
+    )
+    task = PublicTask(
+        record=TaskRecord(task_id="doc", difficulty="easy", question=""),
+        assets=TaskAssets(task_dir=tmp_path, context_dir=context),
+    )
+    result = extract_document_records(task, "lab.md")
+    assert "patient_id" in result["columns"]
+    assert "height_cm" in result["columns"]
+    assert "creatinine_mg_dl" in result["columns"]
+    assert result["rows"][0][result["columns"].index("patient_id")] == 12345
+    assert result["rows"][0][result["columns"].index("height_cm")] == 165.0
+    assert result["rows"][0][result["columns"].index("creatinine_mg_dl")] == 3.1
