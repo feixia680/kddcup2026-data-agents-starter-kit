@@ -3,14 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from data_agent_baseline.agents.answer_guard import normalize_answer_for_question
+from data_agent_baseline.agents.result_verifier import verify_answer_shape
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
-from data_agent_baseline.tools.filesystem import (
-    list_context_tree,
-    read_csv_preview,
-    read_doc_preview,
-    read_json_preview,
-    resolve_context_path,
-)
+from data_agent_baseline.tools.document_extract import extract_document_records
+from data_agent_baseline.tools.filesystem import list_context_tree, read_csv_preview, read_doc_preview, read_json_preview, resolve_context_path
 from data_agent_baseline.tools.python_exec import execute_python_code
 from data_agent_baseline.tools.sqlite import execute_read_only_sql, inspect_sqlite_schema
 
@@ -36,77 +33,59 @@ ToolHandler = Callable[[PublicTask, dict[str, Any]], ToolExecutionResult]
 
 
 def _list_context(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    max_depth = int(action_input.get("max_depth", 4))
-    return ToolExecutionResult(ok=True, content=list_context_tree(task, max_depth=max_depth))
+    return ToolExecutionResult(ok=True, content=list_context_tree(task, max_depth=int(action_input.get("max_depth", 4))))
 
 
 def _read_csv(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    path = str(action_input["path"])
-    max_rows = int(action_input.get("max_rows", 20))
-    return ToolExecutionResult(ok=True, content=read_csv_preview(task, path, max_rows=max_rows))
+    return ToolExecutionResult(ok=True, content=read_csv_preview(task, str(action_input["path"]), max_rows=int(action_input.get("max_rows", 20))))
 
 
 def _read_json(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    path = str(action_input["path"])
-    max_chars = int(action_input.get("max_chars", 4000))
-    return ToolExecutionResult(ok=True, content=read_json_preview(task, path, max_chars=max_chars))
+    return ToolExecutionResult(ok=True, content=read_json_preview(task, str(action_input["path"]), max_chars=int(action_input.get("max_chars", 4000))))
 
 
 def _read_doc(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    path = str(action_input["path"])
-    max_chars = int(action_input.get("max_chars", 4000))
-    return ToolExecutionResult(ok=True, content=read_doc_preview(task, path, max_chars=max_chars))
+    return ToolExecutionResult(ok=True, content=read_doc_preview(task, str(action_input["path"]), max_chars=int(action_input.get("max_chars", 4000))))
+
+
+def _extract_document(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+    return ToolExecutionResult(ok=True, content=extract_document_records(task, str(action_input["path"])))
 
 
 def _inspect_sqlite_schema(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    path = resolve_context_path(task, str(action_input["path"]))
-    return ToolExecutionResult(ok=True, content=inspect_sqlite_schema(path))
+    return ToolExecutionResult(ok=True, content=inspect_sqlite_schema(resolve_context_path(task, str(action_input["path"]))))
 
 
 def _execute_context_sql(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    path = resolve_context_path(task, str(action_input["path"]))
-    sql = str(action_input["sql"])
-    limit = int(action_input.get("limit", 200))
-    return ToolExecutionResult(ok=True, content=execute_read_only_sql(path, sql, limit=limit))
+    return ToolExecutionResult(ok=True, content=execute_read_only_sql(resolve_context_path(task, str(action_input["path"])), str(action_input["sql"]), limit=int(action_input.get("limit", 200))))
 
 
 def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
-    code = str(action_input["code"])
-    content = execute_python_code(
-        context_root=task.context_dir,
-        code=code,
-        timeout_seconds=EXECUTE_PYTHON_TIMEOUT_SECONDS,
-    )
+    content = execute_python_code(task.context_dir, str(action_input["code"]), timeout_seconds=EXECUTE_PYTHON_TIMEOUT_SECONDS)
     return ToolExecutionResult(ok=bool(content.get("success")), content=content)
 
 
-def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+def _answer(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     columns = action_input.get("columns")
     rows = action_input.get("rows")
     if not isinstance(columns, list) or not columns or not all(isinstance(item, str) for item in columns):
         raise ValueError("answer.columns must be a non-empty list of strings.")
     if not isinstance(rows, list):
         raise ValueError("answer.rows must be a list.")
-
-    normalized_rows: list[list[Any]] = []
+    raw_rows: list[list[Any]] = []
     for row in rows:
-        if not isinstance(row, list):
-            raise ValueError("Each answer row must be a list.")
-        if len(row) != len(columns):
+        if not isinstance(row, list) or len(row) != len(columns):
             raise ValueError("Each answer row must match the number of columns.")
-        normalized_rows.append(list(row))
-
-    answer = AnswerTable(columns=list(columns), rows=normalized_rows)
-    return ToolExecutionResult(
-        ok=True,
-        content={
-            "status": "submitted",
-            "column_count": len(columns),
-            "row_count": len(normalized_rows),
-        },
-        is_terminal=True,
-        answer=answer,
-    )
+        raw_rows.append(list(row))
+    answer, warnings = normalize_answer_for_question(task, list(columns), raw_rows)
+    verification = verify_answer_shape(task, answer.columns, answer.rows)
+    if verification.errors:
+        raise ValueError("; ".join(verification.errors))
+    warnings.extend(verification.warnings)
+    content: dict[str, Any] = {"status": "submitted", "column_count": len(answer.columns), "row_count": len(answer.rows)}
+    if warnings:
+        content["answer_guard"] = warnings
+    return ToolExecutionResult(ok=True, content=content, is_terminal=True, answer=answer)
 
 
 @dataclass(slots=True)
@@ -130,64 +109,15 @@ class ToolRegistry:
 
 def create_default_tool_registry() -> ToolRegistry:
     specs = {
-        "answer": ToolSpec(
-            name="answer",
-            description="Submit the final answer table. This is the only valid terminating action.",
-            input_schema={
-                "columns": ["column_name"],
-                "rows": [["value_1"]],
-            },
-        ),
-        "execute_context_sql": ToolSpec(
-            name="execute_context_sql",
-            description="Run a read-only SQL query against a sqlite/db file inside context.",
-            input_schema={"path": "relative/path/to/file.sqlite", "sql": "SELECT ...", "limit": 200},
-        ),
-        "execute_python": ToolSpec(
-            name="execute_python",
-            description=(
-                "Execute arbitrary Python code with the task context directory as the "
-                "working directory. The tool returns the code's captured stdout as `output`. "
-                f"The execution timeout is fixed at {EXECUTE_PYTHON_TIMEOUT_SECONDS} seconds."
-            ),
-            input_schema={
-                "code": "import os\nprint(sorted(os.listdir('.')))",
-            },
-        ),
-        "inspect_sqlite_schema": ToolSpec(
-            name="inspect_sqlite_schema",
-            description="Inspect tables and columns in a sqlite/db file inside context.",
-            input_schema={"path": "relative/path/to/file.sqlite"},
-        ),
-        "list_context": ToolSpec(
-            name="list_context",
-            description="List files and directories available under context.",
-            input_schema={"max_depth": 4},
-        ),
-        "read_csv": ToolSpec(
-            name="read_csv",
-            description="Read a preview of a CSV file inside context.",
-            input_schema={"path": "relative/path/to/file.csv", "max_rows": 20},
-        ),
-        "read_doc": ToolSpec(
-            name="read_doc",
-            description="Read a text-like document inside context.",
-            input_schema={"path": "relative/path/to/file.md", "max_chars": 4000},
-        ),
-        "read_json": ToolSpec(
-            name="read_json",
-            description="Read a preview of a JSON file inside context.",
-            input_schema={"path": "relative/path/to/file.json", "max_chars": 4000},
-        ),
+        "answer": ToolSpec("answer", "Submit the minimal final answer table.", {"columns": ["column_name"], "rows": [["value_1"]]}),
+        "execute_context_sql": ToolSpec("execute_context_sql", "Run read-only SQL inside context.", {"path": "relative/path.sqlite", "sql": "SELECT ...", "limit": 200}),
+        "execute_python": ToolSpec("execute_python", f"Execute Python in the task context. Timeout={EXECUTE_PYTHON_TIMEOUT_SECONDS}s.", {"code": "import os\nprint(sorted(os.listdir('.')))"}),
+        "inspect_sqlite_schema": ToolSpec("inspect_sqlite_schema", "Inspect a SQLite schema inside context.", {"path": "relative/path.sqlite"}),
+        "list_context": ToolSpec("list_context", "List files under context.", {"max_depth": 4}),
+        "read_csv": ToolSpec("read_csv", "Read a CSV preview.", {"path": "relative/path.csv", "max_rows": 20}),
+        "read_doc": ToolSpec("read_doc", "Read a text document preview.", {"path": "relative/path.md", "max_chars": 4000}),
+        "extract_document_records": ToolSpec("extract_document_records", "Extract structured records from a document.", {"path": "relative/path.md"}),
+        "read_json": ToolSpec("read_json", "Read a JSON preview.", {"path": "relative/path.json", "max_chars": 4000}),
     }
-    handlers = {
-        "answer": _answer,
-        "execute_context_sql": _execute_context_sql,
-        "execute_python": _execute_python,
-        "inspect_sqlite_schema": _inspect_sqlite_schema,
-        "list_context": _list_context,
-        "read_csv": _read_csv,
-        "read_doc": _read_doc,
-        "read_json": _read_json,
-    }
+    handlers = {"answer": _answer, "execute_context_sql": _execute_context_sql, "execute_python": _execute_python, "inspect_sqlite_schema": _inspect_sqlite_schema, "list_context": _list_context, "read_csv": _read_csv, "read_doc": _read_doc, "extract_document_records": _extract_document, "read_json": _read_json}
     return ToolRegistry(specs=specs, handlers=handlers)

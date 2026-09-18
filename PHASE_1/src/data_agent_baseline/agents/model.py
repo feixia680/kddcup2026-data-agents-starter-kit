@@ -46,6 +46,7 @@ class OpenAIModelAdapter:
         client = OpenAI(
             api_key=self.api_key,
             base_url=self.api_base,
+            timeout=60.0,
         )
 
         try:
