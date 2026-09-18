@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
@@ -22,6 +22,18 @@ class ReActAgentConfig:
     repeat_warning_threshold: int = 2
     model_retry_limit: int = 1
     verification_retry_limit: int = 2
+    tool_call_budgets: dict[str, int] = field(
+        default_factory=lambda: {
+            "list_context": 2,
+            "read_doc": 4,
+            "read_csv": 4,
+            "read_json": 4,
+            "inspect_sqlite_schema": 2,
+            "execute_context_sql": 4,
+            "execute_python": 6,
+            "extract_document_records": 3,
+        }
+    )
 
 
 def _strip_json_fence(raw_response: str) -> str:
@@ -127,6 +139,7 @@ class ReActAgent:
         previous_signature: tuple[str, str] | None = None
         repeated_actions = 0
         consecutive_model_errors = 0
+        tool_call_counts: dict[str, int] = {}
         for step_index in range(1, self.config.max_steps + 1):
             step_started = perf_counter()
             remaining_steps = self.config.max_steps - step_index + 1
@@ -197,6 +210,28 @@ class ReActAgent:
                         continue
                     state.failure_reason = "Critical verification warnings remained unresolved before answer submission."
                     break
+                if model_step.action != "answer":
+                    tool_limit = self.config.tool_call_budgets.get(model_step.action)
+                    tool_calls = tool_call_counts.get(model_step.action, 0)
+                    if tool_limit is not None and tool_calls >= tool_limit:
+                        observation = {
+                            "ok": False,
+                            "error": "tool_budget_exceeded",
+                            "tool": model_step.action,
+                            "tool_calls": tool_calls,
+                            "tool_limit": tool_limit,
+                            "control": "This tool has reached its call budget. Switch to a different tool or submit the best supported answer.",
+                            "telemetry": {
+                                "step_index": step_index,
+                                "model_seconds": model_elapsed,
+                                "tool_seconds": 0.0,
+                                "step_seconds": perf_counter() - step_started,
+                            },
+                        }
+                        state.steps.append(StepRecord(step_index=step_index, thought=model_step.thought, action="__tool_budget_exceeded__", action_input={"tool": model_step.action, "limit": tool_limit}, raw_response=raw_response, observation=observation, ok=False))
+                        self._checkpoint(task, state)
+                        continue
+                    tool_call_counts[model_step.action] = tool_calls + 1
                 tool_started = perf_counter()
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
                 tool_elapsed = perf_counter() - tool_started

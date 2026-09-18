@@ -136,3 +136,43 @@ def test_document_extractor_keeps_task_relevant_numeric_fields(tmp_path):
     assert result["rows"][0][result["columns"].index("patient_id")] == 12345
     assert result["rows"][0][result["columns"].index("height_cm")] == 165.0
     assert result["rows"][0][result["columns"].index("creatinine_mg_dl")] == 3.1
+
+
+def test_tool_budget_stops_repeated_exploration():
+    task = make_task(Path("."))
+    calls = []
+
+    def execute_handler(_task, _input):
+        calls.append("execute_python")
+        return ToolExecutionResult(True, {"success": True, "output": "intermediate"})
+
+    def answer_handler(_task, _input):
+        calls.append("answer")
+        return ToolExecutionResult(True, {"status": "submitted"}, True, AnswerTable(["value"], [[1]]))
+
+    class LoopThenAnswerModel:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, _messages):
+            self.calls += 1
+            if self.calls <= 3:
+                return '{"thought":"keep exploring","action":"execute_python","action_input":{"code":"print(1)"}}'
+            return '{"thought":"submit","action":"answer","action_input":{"columns":["value"],"rows":[[1]]}}'
+
+    registry = ToolRegistry(
+        specs={
+            "answer": ToolSpec("answer", "submit", {}),
+            "execute_python": ToolSpec("execute_python", "compute", {}),
+        },
+        handlers={"answer": answer_handler, "execute_python": execute_handler},
+    )
+    result = ReActAgent(
+        model=LoopThenAnswerModel(),
+        tools=registry,
+        config=ReActAgentConfig(max_steps=5, force_answer_remaining=0, tool_call_budgets={"execute_python": 2}),
+    ).run(task)
+    assert result.succeeded
+    assert result.answer == AnswerTable(["value"], [[1]])
+    assert calls == ["execute_python", "execute_python", "answer"]
+    assert "__tool_budget_exceeded__" in [step.action for step in result.steps]
