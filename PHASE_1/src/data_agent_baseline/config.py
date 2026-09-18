@@ -28,6 +28,9 @@ class AgentConfig:
     api_key: str = ""
     max_steps: int = 16
     temperature: float = 0.0
+    request_timeout_seconds: float = 45.0
+    request_max_retries: int = 0
+    model_retry_limit: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,9 @@ def load_app_config(config_path: Path) -> AppConfig:
         api_key=str(agent_payload.get("api_key", agent_defaults.api_key)),
         max_steps=int(agent_payload.get("max_steps", agent_defaults.max_steps)),
         temperature=float(agent_payload.get("temperature", agent_defaults.temperature)),
+        request_timeout_seconds=float(agent_payload.get("request_timeout_seconds", agent_defaults.request_timeout_seconds)),
+        request_max_retries=int(agent_payload.get("request_max_retries", agent_defaults.request_max_retries)),
+        model_retry_limit=int(agent_payload.get("model_retry_limit", agent_defaults.model_retry_limit)),
     )
     raw_run_id = run_payload.get("run_id")
     run_id = run_defaults.run_id

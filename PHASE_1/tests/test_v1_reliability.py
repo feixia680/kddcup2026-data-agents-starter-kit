@@ -1,7 +1,8 @@
 from pathlib import Path
 
+import data_agent_baseline.agents.model as model_module
 from data_agent_baseline.agents.answer_guard import normalize_answer_for_question
-from data_agent_baseline.agents.model import ScriptedModelAdapter
+from data_agent_baseline.agents.model import OpenAIModelAdapter, ScriptedModelAdapter
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig, parse_model_step
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.tools.registry import ToolExecutionResult, ToolRegistry, ToolSpec
@@ -132,3 +133,31 @@ def test_react_enforces_answer_only_budget():
     assert result.succeeded
     assert calls == ["answer"]
     assert result.steps[0].action == "__answer_required__"
+
+
+
+def test_openai_adapter_disables_sdk_retries_and_uses_hard_request_timeout(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["request"] = kwargs
+            return type("Response", (), {"choices": [type("Choice", (), {"message": type("Message", (), {"content": "ok"})()})()]})()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(model_module, "OpenAI", FakeClient)
+    adapter = OpenAIModelAdapter(
+        model="test-model",
+        api_base="https://example.test/v1",
+        api_key="test-key",
+        temperature=0.0,
+        timeout_seconds=12.5,
+        max_retries=0,
+    )
+    assert adapter.complete([]) == "ok"
+    assert captured["client"]["timeout"] == 12.5
+    assert captured["client"]["max_retries"] == 0

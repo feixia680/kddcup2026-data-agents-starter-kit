@@ -67,6 +67,8 @@ def build_model_adapter(config: AppConfig):
         api_base=config.agent.api_base,
         api_key=config.agent.api_key,
         temperature=config.agent.temperature,
+        timeout_seconds=config.agent.request_timeout_seconds,
+        max_retries=config.agent.request_max_retries,
     )
 
 
@@ -104,7 +106,7 @@ def _run_single_task_core(*, task_id: str, config: AppConfig, checkpoint_path: P
     agent = ReActAgent(
         model=model or build_model_adapter(config),
         tools=tools or create_default_tool_registry(),
-        config=ReActAgentConfig(max_steps=config.agent.max_steps),
+        config=ReActAgentConfig(max_steps=config.agent.max_steps, model_retry_limit=config.agent.model_retry_limit),
         checkpoint_callback=checkpoint_callback if checkpoint_path is not None else None,
     )
     return agent.run(task).to_dict()
