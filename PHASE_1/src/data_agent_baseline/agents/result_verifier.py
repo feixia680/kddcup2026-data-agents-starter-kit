@@ -52,6 +52,12 @@ def verify_tool_result(task: PublicTask, action: str, action_input: dict[str, An
             warnings.append("row-level min/max question may have been grouped before comparison")
         if ("percentage" in q or "percent" in q) and "count" in sql and "/" not in sql:
             warnings.append("percentage query has no visible denominator")
+        if ("average" in q or "mean" in q) and "sum(" in sql and "avg(" not in sql:
+            warnings.append("average question uses SUM without AVG; verify the requested aggregation")
+        if ("total" in q or "sum" in q) and "avg(" in sql and "sum(" not in sql:
+            warnings.append("total question uses AVG without SUM; verify the requested aggregation")
+        if any(token in q for token in ("vote", "votes", "voted")) and "post" in sql and "vote" not in sql:
+            warnings.append("vote question appears to count posts; verify the vote entity and table")
     if action == "execute_python":
         code = str(action_input.get("code", ""))
         if "1k" in code.lower() and not any(token in q for token in ("sample", "1k")):
@@ -60,6 +66,10 @@ def verify_tool_result(task: PublicTask, action: str, action_input: dict[str, An
             warnings.append("Python code uses position for a rank question")
         if ("per unit" in q or "unit price" in q or ("price" in q and "amount" in q)) and "/" not in code:
             warnings.append("Python code does not visibly compute the per-row ratio (price per amount)")
+        if ("average" in q or "mean" in q) and "sum(" in code and not any(token in code for token in ("mean(", "average(", ".avg(")):
+            warnings.append("average question uses SUM without a visible mean/average operation")
+        if any(token in q for token in ("vote", "votes", "voted")) and "post" in code and "vote" not in code:
+            warnings.append("vote question appears to count posts; verify the vote entity and table")
     if content.get("success") is False or content.get("error"):
         errors.append("tool returned an execution error")
     return VerificationReport(warnings=warnings, errors=errors)

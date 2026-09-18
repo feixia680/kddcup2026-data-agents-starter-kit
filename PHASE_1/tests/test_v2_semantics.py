@@ -49,3 +49,22 @@ def test_answer_verifier_rejects_duplicate_columns_and_flags_shape():
     report = verify_answer_shape(task("What percentage is the answer?"), ["value", "value"], [[1, 2]])
     assert report.errors
 
+
+
+
+def test_tool_verifier_flags_average_and_vote_entity_mismatches():
+    report = verify_tool_result(
+        task("What is the average expense per month?"),
+        "execute_context_sql",
+        {"sql": "SELECT SUM(amount) / 12 FROM expenses"},
+        {"rows": [[82027220]]},
+    )
+    assert any("SUM without AVG" in warning for warning in report.warnings)
+
+    report = verify_tool_result(
+        task("How many votes did the user receive?"),
+        "execute_python",
+        {"code": "answer = posts[posts.user_id == target].shape[0]"},
+        {"success": True},
+    )
+    assert any("count posts" in warning for warning in report.warnings)
