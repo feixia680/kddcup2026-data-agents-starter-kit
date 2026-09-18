@@ -59,3 +59,57 @@ def test_react_trace_contains_latency_telemetry(tmp_path):
     assert telemetry["tool_seconds"] >= 0
     assert telemetry["step_seconds"] >= 0
 
+
+
+
+def test_critical_verification_warning_blocks_answer_until_repair():
+    from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
+    from data_agent_baseline.benchmark.schema import AnswerTable
+    from data_agent_baseline.tools.registry import ToolExecutionResult, ToolRegistry, ToolSpec
+
+    task = PublicTask(
+        record=TaskRecord(task_id="avg", difficulty="easy", question="What is the average expense?"),
+        assets=TaskAssets(task_dir=Path(".").resolve(), context_dir=Path(".").resolve()),
+    )
+    calls = []
+
+    def execute_handler(_task, action_input):
+        calls.append(action_input["code"])
+        if len(calls) == 1:
+            return ToolExecutionResult(True, {"success": True, "output": "SUM without AVG"})
+        return ToolExecutionResult(True, {"success": True, "output": "mean = 4.0"})
+
+    def answer_handler(_task, _input):
+        calls.append("answer")
+        return ToolExecutionResult(True, {"status": "submitted"}, True, AnswerTable(["value"], [[4.0]]))
+
+    class RepairModel:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"thought":"compute","action":"execute_python","action_input":{"code":"total = df[\'amount\'].sum()"}}'
+            if self.calls == 2:
+                return '{"thought":"submit","action":"answer","action_input":{"columns":["value"],"rows":[[82027220]]}}'
+            if self.calls == 3:
+                return '{"thought":"repair with mean","action":"execute_python","action_input":{"code":"mean = df[\'amount\'].mean()"}}'
+            return '{"thought":"submit corrected","action":"answer","action_input":{"columns":["value"],"rows":[[4.0]]}}'
+
+    registry = ToolRegistry(
+        specs={
+            "answer": ToolSpec("answer", "submit", {}),
+            "execute_python": ToolSpec("execute_python", "compute", {}),
+        },
+        handlers={"answer": answer_handler, "execute_python": execute_handler},
+    )
+    result = ReActAgent(
+        model=RepairModel(),
+        tools=registry,
+        config=ReActAgentConfig(max_steps=6),
+    ).run(task)
+    assert result.succeeded
+    assert result.answer == AnswerTable(["value"], [[4.0]])
+    assert "__verification_required__" in [step.action for step in result.steps]
+    assert calls[-1] == "answer"

@@ -21,6 +21,7 @@ class ReActAgentConfig:
     force_answer_remaining: int = 2
     repeat_warning_threshold: int = 2
     model_retry_limit: int = 1
+    verification_retry_limit: int = 2
 
 
 def _strip_json_fence(raw_response: str) -> str:
@@ -108,7 +109,17 @@ class ReActAgent:
     def _checkpoint(self, task: PublicTask, state: AgentRuntimeState) -> None:
         if self.checkpoint_callback is None:
             return
-        payload = AgentRunResult(task_id=task.task_id, answer=state.answer, steps=list(state.steps), failure_reason=state.failure_reason, evidence_memory=state.evidence_memory).to_dict()
+        payload = AgentRunResult(
+            task_id=task.task_id,
+            answer=state.answer,
+            steps=list(state.steps),
+            failure_reason=state.failure_reason,
+            evidence_memory=state.evidence_memory,
+            verification_required=list(state.verification_required),
+            verification_attempts=state.verification_attempts,
+        ).to_dict()
+        payload["verification_required"] = list(state.verification_required)
+        payload["verification_attempts"] = state.verification_attempts
         self.checkpoint_callback(payload)
 
     def run(self, task: PublicTask) -> AgentRunResult:
@@ -151,7 +162,7 @@ class ReActAgent:
                 signature = (model_step.action, json.dumps(model_step.action_input, sort_keys=True, ensure_ascii=False))
                 repeated_actions = repeated_actions + 1 if signature == previous_signature else 0
                 previous_signature = signature
-                if answer_only and model_step.action != "answer":
+                if answer_only and model_step.action != "answer" and not state.verification_required:
                     observation = {
                         "ok": False,
                         "error": "answer_required",
@@ -166,6 +177,26 @@ class ReActAgent:
                     state.steps.append(StepRecord(step_index=step_index, thought=model_step.thought, action="__answer_required__", action_input=model_step.action_input, raw_response=raw_response, observation=observation, ok=False))
                     self._checkpoint(task, state)
                     continue
+                if model_step.action == "answer" and state.verification_required:
+                    if state.verification_attempts < self.config.verification_retry_limit:
+                        state.verification_attempts += 1
+                        observation = {
+                            "ok": False,
+                            "error": "verification_required",
+                            "verification_required": list(state.verification_required),
+                            "control": "Do not submit this answer yet. Re-run the relevant query or computation and remove the critical verification warnings.",
+                            "telemetry": {
+                                "step_index": step_index,
+                                "model_seconds": model_elapsed,
+                                "tool_seconds": 0.0,
+                                "step_seconds": perf_counter() - step_started,
+                            },
+                        }
+                        state.steps.append(StepRecord(step_index=step_index, thought=model_step.thought, action="__verification_required__", action_input=model_step.action_input, raw_response=raw_response, observation=observation, ok=False))
+                        self._checkpoint(task, state)
+                        continue
+                    state.failure_reason = "Critical verification warnings remained unresolved before answer submission."
+                    break
                 tool_started = perf_counter()
                 tool_result = self.tools.execute(task, model_step.action, model_step.action_input)
                 tool_elapsed = perf_counter() - tool_started
@@ -188,6 +219,14 @@ class ReActAgent:
                 state.steps.append(step_record)
                 if tool_result.ok and model_step.action != "answer":
                     state.evidence_memory = _compact_evidence(model_step.action, model_step.action_input, tool_result.content)
+                critical_warnings = [
+                    warning
+                    for warning in verification.warnings
+                    if any(token in warning.lower() for token in ("sum without avg", "average question uses sum", "fixed 12", "divides a total", "avg without sum", "count posts", "per-row ratio"))
+                ]
+                state.verification_required = critical_warnings
+                if not critical_warnings:
+                    state.verification_attempts = 0
                 if tool_result.is_terminal:
                     state.answer = tool_result.answer
                     self._checkpoint(task, state)
@@ -209,6 +248,14 @@ class ReActAgent:
 
         if state.answer is None and state.failure_reason is None:
             state.failure_reason = "Agent did not submit an answer within max_steps."
-        result = AgentRunResult(task_id=task.task_id, answer=state.answer, steps=list(state.steps), failure_reason=state.failure_reason, evidence_memory=state.evidence_memory)
+        result = AgentRunResult(
+            task_id=task.task_id,
+            answer=state.answer,
+            steps=list(state.steps),
+            failure_reason=state.failure_reason,
+            evidence_memory=state.evidence_memory,
+            verification_required=list(state.verification_required),
+            verification_attempts=state.verification_attempts,
+        )
         self._checkpoint(task, state)
         return result

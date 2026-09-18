@@ -26,6 +26,8 @@ class AgentRuntimeState:
     answer: AnswerTable | None = None
     failure_reason: str | None = None
     evidence_memory: dict[str, Any] | None = None
+    verification_required: list[str] = field(default_factory=list)
+    verification_attempts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,8 @@ class AgentRunResult:
     steps: list[StepRecord]
     failure_reason: str | None
     evidence_memory: dict[str, Any] | None = None
+    verification_required: list[str] = field(default_factory=list)
+    verification_attempts: int = 0
 
     @property
     def succeeded(self) -> bool:
@@ -47,5 +51,7 @@ class AgentRunResult:
             "steps": [step.to_dict() for step in self.steps],
             "failure_reason": self.failure_reason,
             "evidence_memory": self.evidence_memory,
+            "verification_required": list(self.verification_required),
+            "verification_attempts": self.verification_attempts,
             "succeeded": self.succeeded,
         }

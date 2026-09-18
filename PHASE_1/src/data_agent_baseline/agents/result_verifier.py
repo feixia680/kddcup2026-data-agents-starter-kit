@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +69,8 @@ def verify_tool_result(task: PublicTask, action: str, action_input: dict[str, An
             warnings.append("Python code does not visibly compute the per-row ratio (price per amount)")
         if ("average" in q or "mean" in q) and "sum(" in code and not any(token in code for token in ("mean(", "average(", ".avg(")):
             warnings.append("average question uses SUM without a visible mean/average operation")
+        if ("average" in q or "mean" in q) and re.search(r"(?:total|aggregate)[^\n]{0,80}/\s*12", code, flags=re.IGNORECASE):
+            warnings.append("average question divides a total by a fixed 12 without computing the requested mean")
         if any(token in q for token in ("vote", "votes", "voted")) and "post" in code and "vote" not in code:
             warnings.append("vote question appears to count posts; verify the vote entity and table")
     if content.get("success") is False or content.get("error"):

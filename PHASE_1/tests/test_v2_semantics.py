@@ -68,3 +68,14 @@ def test_tool_verifier_flags_average_and_vote_entity_mismatches():
         {"success": True},
     )
     assert any("count posts" in warning for warning in report.warnings)
+
+
+
+def test_tool_verifier_flags_fixed_denominator_average():
+    report = verify_tool_result(
+        task("What is the average monthly consumption?"),
+        "execute_python",
+        {"code": "total_2013 = 100; average_monthly = total_2013 / 12"},
+        {"success": True},
+    )
+    assert any("fixed 12" in warning for warning in report.warnings)
