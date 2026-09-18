@@ -63,7 +63,11 @@ def infer_semantic_plan(question: str) -> SemanticPlan:
     else:
         aggregation = "row-level selection or direct lookup"
 
-    if "per unit" in q or "each" in q or "unit price" in q:
+    if "average monthly" in q:
+        target_grain = "raw monthly observation before explicit monthly scaling"
+    elif "posts" in q and "votes" in q:
+        target_grain = "single-user entity counts"
+    elif "per unit" in q or "each" in q or "unit price" in q:
         target_grain = "row-level"
         checks.append("compute the per-row ratio before filtering; do not filter the raw total")
     elif any(token in q for token in ("lowest", "highest", "cheapest", "most expensive", "closest")):
@@ -74,6 +78,13 @@ def infer_semantic_plan(question: str) -> SemanticPlan:
     else:
         target_grain = "scalar or requested entity"
 
+    if "average monthly" in q:
+        checks.append("compute AVG over the filtered raw monthly records, then apply the explicit /12 scaling exactly once")
+        checks.append("do not replace AVG(raw records) with SUM(raw records) / 12")
+    if "posts" in q and "votes" in q:
+        output_fields.append("post_count divided by vote_count for the same user")
+        checks.append("count the user's posts and votes as separate entities before division")
+        checks.append("do not count votes attached to posts as the user's received-vote total")
     if "rank" in q:
         checks.append("use the semantic rank field; do not substitute a display position")
         filters.append("rank is distinct from position")
@@ -86,7 +97,13 @@ def infer_semantic_plan(question: str) -> SemanticPlan:
         source_scope = "all available records matching the task"
 
     denominator = "the population explicitly named by the question"
-    if "per" in q and "total" in q:
+    if "average monthly" in q:
+        aggregation = "AVG(filtered raw monthly consumption) / 12"
+        denominator = "the explicit monthly scaling factor 12, applied after AVG"
+    elif "posts" in q and "votes" in q:
+        aggregation = "COUNT(user posts) / COUNT(user votes)"
+        denominator = "the user's vote count, not the number of posts or post-linked votes"
+    elif "per" in q and "total" in q:
         denominator = "the per-row amount/quantity, not the aggregate total"
     elif "percentage" in q or "percent" in q:
         denominator = "the explicitly requested numerator and denominator"

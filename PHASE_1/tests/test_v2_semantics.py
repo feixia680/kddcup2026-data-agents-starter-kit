@@ -79,3 +79,16 @@ def test_tool_verifier_flags_fixed_denominator_average():
         {"success": True},
     )
     assert any("fixed 12" in warning for warning in report.warnings)
+
+
+
+def test_semantic_plan_separates_average_monthly_and_vote_entities():
+    plan = infer_semantic_plan("What was the average monthly consumption of customers in SME for the year 2013?")
+    assert plan.target_grain == "raw monthly observation before explicit monthly scaling"
+    assert plan.aggregation == "AVG(filtered raw monthly consumption) / 12"
+    assert any("do not replace AVG" in check for check in plan.checks)
+
+    plan = infer_semantic_plan("For the user No.24, how many times is the number of his/her posts compared to his/her votes?")
+    assert plan.target_grain == "single-user entity counts"
+    assert plan.aggregation == "COUNT(user posts) / COUNT(user votes)"
+    assert any("separate entities" in check for check in plan.checks)
