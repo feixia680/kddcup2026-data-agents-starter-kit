@@ -25,6 +25,7 @@ class AgentRuntimeState:
     steps: list[StepRecord] = field(default_factory=list)
     answer: AnswerTable | None = None
     failure_reason: str | None = None
+    evidence_memory: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class AgentRunResult:
     answer: AnswerTable | None
     steps: list[StepRecord]
     failure_reason: str | None
+    evidence_memory: dict[str, Any] | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -44,5 +46,6 @@ class AgentRunResult:
             "answer": self.answer.to_dict() if self.answer is not None else None,
             "steps": [step.to_dict() for step in self.steps],
             "failure_reason": self.failure_reason,
+            "evidence_memory": self.evidence_memory,
             "succeeded": self.succeeded,
         }

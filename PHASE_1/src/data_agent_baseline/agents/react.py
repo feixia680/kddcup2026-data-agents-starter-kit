@@ -46,6 +46,20 @@ def _load_single_json_object(text: str) -> dict[str, object]:
     return payload
 
 
+def _compact_evidence(action: str, action_input: dict[str, Any], content: dict[str, Any]) -> dict[str, Any]:
+    source_input = {}
+    for key in ("path", "sql", "code"):
+        if key in action_input:
+            value = str(action_input[key])
+            source_input[key] = value if len(value) <= 1200 else value[:1200] + "...[truncated]"
+    serialized = json.dumps(content, ensure_ascii=False, default=str)
+    if len(serialized) <= 6000:
+        compact_content: object = content
+    else:
+        compact_content = {"truncated": True, "preview": serialized[:6000] + "...[truncated]"}
+    return {"source_action": action, "source_input": source_input, "content": compact_content}
+
+
 def parse_model_step(raw_response: str) -> ModelStep:
     payload = _load_single_json_object(_strip_json_fence(raw_response))
     thought = payload.get("thought", "")
@@ -83,12 +97,18 @@ class ReActAgent:
         for step in state.steps:
             messages.append(ModelMessage(role="assistant", content=step.raw_response))
             messages.append(ModelMessage(role="user", content=build_observation_prompt(step.observation)))
+        if state.evidence_memory is not None:
+            messages.append(ModelMessage(
+                role="user",
+                content="CURRENT EVIDENCE MEMORY (preserve provenance; do not treat it as a new tool call):\n"
+                + json.dumps(state.evidence_memory, ensure_ascii=False, indent=2),
+            ))
         return messages
 
     def _checkpoint(self, task: PublicTask, state: AgentRuntimeState) -> None:
         if self.checkpoint_callback is None:
             return
-        payload = AgentRunResult(task_id=task.task_id, answer=state.answer, steps=list(state.steps), failure_reason=state.failure_reason).to_dict()
+        payload = AgentRunResult(task_id=task.task_id, answer=state.answer, steps=list(state.steps), failure_reason=state.failure_reason, evidence_memory=state.evidence_memory).to_dict()
         self.checkpoint_callback(payload)
 
     def run(self, task: PublicTask) -> AgentRunResult:
@@ -166,6 +186,8 @@ class ReActAgent:
                     observation["control"] = "This action repeats a previous action. Stop exploring and submit the best supported answer."
                 step_record = StepRecord(step_index=step_index, thought=model_step.thought, action=model_step.action, action_input=model_step.action_input, raw_response=raw_response, observation=observation, ok=tool_result.ok)
                 state.steps.append(step_record)
+                if tool_result.ok and model_step.action != "answer":
+                    state.evidence_memory = _compact_evidence(model_step.action, model_step.action_input, tool_result.content)
                 if tool_result.is_terminal:
                     state.answer = tool_result.answer
                     self._checkpoint(task, state)
@@ -187,6 +209,6 @@ class ReActAgent:
 
         if state.answer is None and state.failure_reason is None:
             state.failure_reason = "Agent did not submit an answer within max_steps."
-        result = AgentRunResult(task_id=task.task_id, answer=state.answer, steps=list(state.steps), failure_reason=state.failure_reason)
+        result = AgentRunResult(task_id=task.task_id, answer=state.answer, steps=list(state.steps), failure_reason=state.failure_reason, evidence_memory=state.evidence_memory)
         self._checkpoint(task, state)
         return result

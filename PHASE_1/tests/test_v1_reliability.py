@@ -161,3 +161,46 @@ def test_openai_adapter_disables_sdk_retries_and_uses_hard_request_timeout(monke
     assert adapter.complete([]) == "ok"
     assert captured["client"]["timeout"] == 12.5
     assert captured["client"]["max_retries"] == 0
+
+
+
+def test_react_persists_last_successful_evidence_for_final_answer():
+    task = make_task("Return the name")
+    checkpoints = []
+    captured_messages = []
+
+    def read_handler(_task, _input):
+        return ToolExecutionResult(True, {"columns": ["name"], "rows": [["Ada"]]})
+
+    def answer_handler(_task, _input):
+        return ToolExecutionResult(True, {"status": "submitted"}, True, AnswerTable(["name"], [["Ada"]]))
+
+    class EvidenceAwareModel:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages):
+            self.calls += 1
+            captured_messages.append(messages)
+            if self.calls == 1:
+                return '{"thought":"inspect","action":"read_csv","action_input":{"path":"people.csv"}}'
+            assert "CURRENT EVIDENCE MEMORY" in messages[-1].content
+            assert '"source_action": "read_csv"' in messages[-1].content
+            return '{"thought":"submit","action":"answer","action_input":{"columns":["name"],"rows":[["Ada"]]}}'
+
+    registry = ToolRegistry(
+        specs={
+            "answer": ToolSpec("answer", "submit", {}),
+            "read_csv": ToolSpec("read_csv", "read", {}),
+        },
+        handlers={"answer": answer_handler, "read_csv": read_handler},
+    )
+    result = ReActAgent(
+        model=EvidenceAwareModel(),
+        tools=registry,
+        config=ReActAgentConfig(max_steps=3),
+        checkpoint_callback=checkpoints.append,
+    ).run(task)
+    assert result.succeeded
+    assert result.evidence_memory["source_action"] == "read_csv"
+    assert any(checkpoint.get("evidence_memory", {}).get("source_action") == "read_csv" for checkpoint in checkpoints)
